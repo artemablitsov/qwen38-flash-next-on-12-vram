@@ -1,0 +1,79 @@
+services:
+  download-weights:
+    image: alpine
+    container_name: download-weights 
+    volumes:
+      - ./models:/models:rw
+    command: 
+      - /bin/sh 
+      - -c 
+      - |
+        [ -e "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf" ] || (mkdir -p /models && wget https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf -P /models)
+        [ -e "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf" ] || (mkdir -p /models && wget https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf -P /models)
+        [ -e "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf" ] || (mkdir -p /models && wget https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf -P /models)
+        [ -e "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf" ] || (mkdir -p /models && wget https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf -P /models)
+
+  llm-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.LLM
+    container_name: llm-server
+    ports:
+      - "8192:8080"
+    volumes:
+      - ./models:/models
+    command: [
+      "-m", "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf", 
+      "--fit",
+      "--fit-margin", "2048",
+      "--cache-ram", "16384",
+      "--host", "0.0.0.0", 
+      "--port", "8080", 
+      "-c", "131072", 
+      "--cache-type-k", "q4_0", 
+      "--cache-type-v", "q4_0", 
+      "--no-mmproj-offload",
+      "--image-min-tokens", "1024",
+      "--temp", "1.0",
+      "--top-p", "0.95",
+      "--top-k", "20",
+      "--min-p", "0.0",
+      "--presence-penalty", "0.0",
+      "--repeat-penalty", "1.0",
+      "-ngl", "5", 
+      "-t", "8", 
+      "-tb", "16", 
+      "-fa", "on",   
+      "-ub","512",
+      "-b","1024",
+      "--jinja",
+      "--metrics"
+      ]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      download-weights:
+        condition: service_completed_successfully
+
+  opencode-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.OpenCode
+    container_name: opencode-server
+    ports:
+      - "4096:4096"
+    volumes:
+      - ./opencode.json:/root/.config/opencode/opencode.json:ro
+      - ./workspace:/root/workspace
+    command: /root/.opencode/bin/opencode web --port 4096 --hostname 0.0.0.0
+    restart: unless-stopped
+    depends_on:
+      llm-server:
+        condition: service_healthy
+

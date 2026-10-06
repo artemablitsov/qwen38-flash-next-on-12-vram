@@ -8,47 +8,86 @@ services:
       - /bin/sh 
       - -c 
       - |
-        [ -e "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf" ] || (mkdir -p /models && wget https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf -P /models)
-        [ -e "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf" ] || (mkdir -p /models && wget https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf -P /models)
-        [ -e "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf" ] || (mkdir -p /models && wget https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf -P /models)
-        [ -e "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf" ] || (mkdir -p /models && wget https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf -P /models)
+        [ -e "/models/Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf" ] || (mkdir -p /models && wget https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf -P /models)
+        [ -e "/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf" ] || (mkdir -p /models && wget https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf -P /models)
+        [ -e "/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00002-of-00003.gguf" ] || (mkdir -p /models && wget https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00002-of-00003.gguf -P /models)
+        [ -e "/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00003-of-00003.gguf" ] || (mkdir -p /models && wget https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00003-of-00003.gguf -P /models)
 
   llm-server:
     build:
       context: .
-      dockerfile: Dockerfile.LLM
+      dockerfile: Dockerfile.PureLLAMA
     container_name: llm-server
     ports:
       - "8192:8080"
     volumes:
       - ./models:/models
+    # ЯВНО ПЕРЕДАЕМ ФЛАГ ОТКЛЮЧЕНИЯ MMAP ЧЕРЕЗ COMMAND
     command: [
-      "-m", "/models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf", 
-      "--fit",
-      "--fit-margin", "2048",
-      "--cache-ram", "16384",
-      "--host", "0.0.0.0", 
-      "--port", "8080", 
-      "-c", "131072", 
-      "--cache-type-k", "q4_0", 
-      "--cache-type-v", "q4_0", 
-      "--no-mmproj-offload",
-      "--image-min-tokens", "1024",
-      "--temp", "1.0",
-      "--top-p", "0.95",
-      "--top-k", "20",
-      "--min-p", "0.0",
-      "--presence-penalty", "0.0",
-      "--repeat-penalty", "1.0",
-      "-ngl", "5", 
-      "-t", "8", 
-      "-tb", "16", 
-      "-fa", "on",   
-      "-ub","512",
-      "-b","1024",
-      "--jinja",
-      "--metrics"
-      ]
+      "--load-mode", "none", 
+      "--ctx-size", "64000", 
+      "--batch-size", "2048", 
+      "--ubatch-size", "2048",
+      "--reasoning-effort", "low",
+      "--reasoning-budget", "1024"
+    ]
+    environment:
+      - LLAMA_ARG_MODEL=/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf
+      - LLAMA_ARG_MODEL_DRAFT=/models/Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf
+
+      # ОТКЛЮЧАЕМ MMAP ДЛЯ МАКСИМАЛЬНОЙ СКОРОСТИ ИЗ RAM
+      - LLAMA_LOAD_MODE=none
+      
+      # Сетевые настройки сервера
+      - LLAMA_HOST=0.0.0.0
+      - LLAMA_PORT=8080
+      - LLAMA_ALIAS=local
+
+      # Распределение памяти между GPU (16GB Ada + 12GB)
+      - LLAMA_SPLIT_MODE=row
+      - LLAMA_TENSOR_SPLIT=16,12
+      - LLAMA_FIT=on
+      - LLAMA_FIT_TARGET=256
+      - LLAMA_FLASH_ATTN=on
+      - LLAMA_CACHE_TYPE_K=q8_0
+      - LLAMA_CACHE_TYPE_V=q8_0
+
+      # Настройки контекста для OpenCode
+      - LLAMA_CTX_SIZE=128000
+      - LLAMA_BATCH_SIZE=2048
+      - LLAMA_UBATCH_SIZE=2048
+      - LLAMA_GRP_ATTN_N=4
+      - LLAMA_GRP_ATTN_W=1024
+      # ШТРАФ ЗА ПОВТОРЕНИЯ: Слегка бьем модель по рукам за зацикливание (дефолт 1.0 - выключен)
+      - LLAMA_REPEAT_PENALTY=1.05
+      # ОКНО ПОВТОРЕНИЙ: Смотрим на последние 256 токенов (около 2-3 функций кода)
+      - LLAMA_REPEAT_LAST_N=256
+      - LLAMA_CHAT_TEMPLATE_KWARGS={"reasoning_effort":"low"}
+
+      # Оптимизация под CPU i7-14700 (8 Производительных ядер)
+      - LLAMA_THREADS=8
+      - LLAMA_THREADS_BATCH=16
+
+      # Спекулятивное декодирование (MTP + Ngram)
+      - LLAMA_SPEC_TYPE=draft-mtp,ngram-mod
+      - LLAMA_SPEC_DRAFT_NGL=99
+      - LLAMA_SPEC_DRAFT_N_MAX=3
+      - LLAMA_SPEC_NGRAM_MATCH=24
+
+      # Настройки сэмплинга для Thinking-режима Qwen
+      - LLAMA_TEMP=0.4
+      - LLAMA_TOP_P=0.95
+      - LLAMA_TOP_K=40
+      - LLAMA_MIN_P=0.05
+      # Ограничиваем максимальное количество токенов на размышления
+      - LLAMA_REASONING_PRESERVE=true      
+      - LLAMA_PRESENCE_PENALTY=0.0
+      - LLAMA_CACHE_PROMPT=true
+      - LLAMA_CTX_SHIFT=true
+      # ЖЕСТКАЯ ЗАЩИТА: принудительная остановка на тегах, чтобы код не зацикливался
+      - LLAMA_STOP=</think>,<|im_end|>,<|endoftext|>
+    # Ограничиваем использование ядер CPU для i7-14700 (16 потоков)
+    cpuset: "0-15"
     restart: unless-stopped
     deploy:
       resources:
@@ -66,6 +105,10 @@ services:
       context: .
       dockerfile: Dockerfile.OpenCode
     container_name: opencode-server
+    environment:
+      - UMASK=000
+      - FILE_MODE=0777  # Некоторые образы вместо UMASK используют эти переменные
+      - DIR_MODE=0777
     ports:
       - "4096:4096"
     volumes:

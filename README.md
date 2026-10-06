@@ -1,4 +1,7 @@
-# How to inference Qwen3.8-Flash-Next on 12Gb VRAM.
+# How to inference Qwen3.8-Flash-Next on ~~12Gb VRAM~~ 28Gb VRAM (I added another card...).
+
+**IT STARTED AS AN EXAMPLE OF RUNNING MoE ON 12Gb, BUT NOW I HAVE 28Gb + NOW I'M USING UNCENSORED MODELS.**
+
 This is an example of docker deployment of the latest MoE [Qwen](https://huggingface.co/Qwen/Qwen3.8-Flash-Next "Qwen") **(thank them a lot)** for agentic job, without any super-puper GPU, on common developer PC.
 The performance is about **13 t/s**, but its not a quick handbook or autocomplete, its agentic job, it takes time, and it works! 
 
@@ -49,17 +52,5 @@ We've vibecoded a retro-style game.
 On this weak machine it took about 2 hours, but it works.
 
 The performance is about **13 t/s**, but its not a quick handbook or autocomplete, its agentic job, it takes time, and it works! 
-
-P.S. Full bwnchmark from http://localhost:8192/metrics
-llamacpp:prompt_tokens_total 32105
-llamacpp:prompt_seconds_total 299.496
-llamacpp:tokens_predicted_total 86432
-llamacpp:tokens_predicted_seconds_total 7599.46
-llamacpp:prompt_tokens_seconds 107.197
-llamacpp:predicted_tokens_seconds 11.3734
-llamacpp:kv_cache_usage_ratio 0.897713
-llamacpp:kv_cache_tokens 117665
-llamacpp:requests_processing 0
-llamacpp:requests_deferred 0
 
 **Спасибо за внимание!**

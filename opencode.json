@@ -15,7 +15,8 @@
       },
       "models": {
         "local": {
-          "name": "local"
+          "name": "local",
+	  "contextWindow": 128000,
         }
       }
     }

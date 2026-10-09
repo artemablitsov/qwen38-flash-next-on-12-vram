@@ -3,15 +3,32 @@ FROM ubuntu:24.04
 # Install basic dependencies and curl
 RUN apt-get update && apt-get install -y \
     curl \
+    jq \
     git \
     build-essential \
     xdg-utils \
+    obfs4proxy \
+    tor \
     && rm -rf /var/lib/apt/lists/*
+
+RUN echo "HTTPTunnelPort 9080" | tee -a /etc/tor/torrc
+RUN echo "\nUseBridges 1\nClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy" | tee -a /etc/tor/torrc
+COPY bridges.txt /etc/tor/bridges.conf
+RUN echo "%include /etc/tor/bridges.conf" | tee -a /etc/tor/torrc
 
 # Install OpenCode CLI
 RUN curl -fsSL https://opencode.ai/install | bash
 
 WORKDIR /workspace
 
-# Expose the default OpenCode web server port
-EXPOSE 4096
+COPY ipghost.sh /usr/bin/ipghost
+
+ARG HTTPS_PROXY=127.0.0.1:9080
+ARG HTTP_PROXY=127.0.0.1:9080
+ARG NO_PROXY=localhost,127.0.0.1,llm-server
+
+COPY entrypoint.sh /entrypoint.sh
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=10s CMD curl -f http://localhost:4096/global/health || exit 1
+
+ENTRYPOINT ["/entrypoint.sh"]

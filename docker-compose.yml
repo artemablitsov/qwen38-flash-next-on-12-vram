@@ -53,7 +53,7 @@ services:
       - LLAMA_CACHE_TYPE_V=q8_0
 
       # Настройки контекста для OpenCode
-      - LLAMA_CTX_SIZE=128000
+      - LLAMA_CTX_SIZE=262144
       - LLAMA_BATCH_SIZE=2048
       - LLAMA_UBATCH_SIZE=2048
       - LLAMA_GRP_ATTN_N=4
@@ -106,17 +106,47 @@ services:
       dockerfile: Dockerfile.OpenCode
     container_name: opencode-server
     environment:
-      - UMASK=000
-      - FILE_MODE=0777  # Некоторые образы вместо UMASK используют эти переменные
-      - DIR_MODE=0777
+      - IP_CHANGE_INTERVAL=300
+      - HTTPS_PROXY=127.0.0.1:9080
+      - HTTP_PROXY=127.0.0.1:9080
+      - NO_PROXY=localhost,127.0.0.1,llm-server
     ports:
-      - "4096:4096"
+      - "80:4096"
     volumes:
       - ./opencode.json:/root/.config/opencode/opencode.json:ro
-      - ./workspace:/root/workspace
-    command: /root/.opencode/bin/opencode web --port 4096 --hostname 0.0.0.0
+      - opencode_workspace:/root/workspace 
+      - ./AGENTS.md:/root/workspace/AGENTS.md:ro
     restart: unless-stopped
     depends_on:
       llm-server:
         condition: service_healthy
+
+  # Сервер Samba, который будет раздавать эту папку в сеть
+  opencode-samba:
+    build:
+      context: .
+      dockerfile: Dockerfile.Samba
+    container_name: opencode-samba
+    environment:
+      - TZ=Europe/Moscow
+      # -p включает глобальный гостевой доступ (guest account)
+      - NMBD=yes
+      - OPTIONS=-p -r
+      # Формат шары: "имя;путь;публичная;только_чтение;гость"
+      # Ставим yes на "публичная" и "гость"
+      - SHARE=public;/share;yes;no;yes
+      - PERMISSIONS=1
+    volumes:
+      - opencode_workspace:/share:z # Подключаем тот же том, что и у приложения
+    ports:
+      - "139:139"
+      - "445:445"
+    restart: unless-stopped
+    depends_on:
+      opencode-server:
+        condition: service_healthy
+
+volumes:
+  opencode_workspace:       
+    name: opencode-workspace
 

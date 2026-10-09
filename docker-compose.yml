@@ -25,7 +25,7 @@ services:
     # ЯВНО ПЕРЕДАЕМ ФЛАГ ОТКЛЮЧЕНИЯ MMAP ЧЕРЕЗ COMMAND
     command: [
       "--load-mode", "none", 
-      "--ctx-size", "64000", 
+      "--ctx-size", "262144", 
       "--batch-size", "2048", 
       "--ubatch-size", "2048",
       "--reasoning-effort", "low",
@@ -34,6 +34,7 @@ services:
     environment:
       - LLAMA_ARG_MODEL=/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf
       - LLAMA_ARG_MODEL_DRAFT=/models/Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf
+      - LLAMA_ARG_MMPROJ=/models/mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf
 
       # ОТКЛЮЧАЕМ MMAP ДЛЯ МАКСИМАЛЬНОЙ СКОРОСТИ ИЗ RAM
       - LLAMA_LOAD_MODE=none

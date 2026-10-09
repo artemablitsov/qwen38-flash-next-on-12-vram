@@ -15,8 +15,14 @@
       "models": {
         "Qwen3.8-flash-next": {
           "name": "Qwen3.8-flash-next",
-	  "contextWindow": 262144,
-          "input": ["text", "image"],
+	  "attachment": true,
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          },
+          "modalities": {
+            "input": ["text", "image"]
+          },
           "compat": {
             "supportsDeveloperRole": true,
             "supportsReasoningEffort": true,
@@ -35,3 +41,4 @@
     }
   }
 }
+

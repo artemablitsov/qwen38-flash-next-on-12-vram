@@ -1,21 +1,28 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "local/Qwen3.8-flash-next",
+  "small_model": "local/Qwen3.8-flash-next",
+  "agent": {
+    "plan": {
+      "model": "local/Qwen3.8-flash-next-think"
+    }
+  },
   "provider": {
     "local": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "localhost",
       "options": {
         "baseURL": "http://llm-server:8080/v1",
-        "headerTimeout": 3600000, 
-	"timeout": 10800000, 
-      	"chunkTimeout": 3600000, 
-      	"setCacheKey": true
+        "headerTimeout": 3600000,
+        "timeout": 10800000,
+        "chunkTimeout": 3600000,
+        "setCacheKey": true
       },
       "models": {
         "Qwen3.8-flash-next": {
-          "name": "Qwen3.8-flash-next",
-	  "attachment": true,
+          "id": "local",
+          "name": "Qwen3.8-flash-next (быстрый, low)",
+          "attachment": true,
           "limit": {
             "context": 262144,
             "output": 32768
@@ -24,21 +31,43 @@
             "input": ["text", "image"]
           },
           "compat": {
-            "supportsDeveloperRole": true,
+            "supportsDeveloperRole": false,
             "supportsReasoningEffort": true,
             "thinkingFormat": "reasoning_effort"
           },
           "options": {
-            "temperature": 1.0,
+            "temperature": 0.6,
             "top_p": 0.95,
             "top_k": 20,
-            "min_p": 0.05,
+            "min_p": 0.0,
             "reasoning_effort": "low"
           }
- 
+        },
+        "Qwen3.8-flash-next-think": {
+          "id": "local",
+          "name": "Qwen3.8-flash-next (думающий, high)",
+          "attachment": true,
+          "limit": {
+            "context": 262144,
+            "output": 65536
+          },
+          "modalities": {
+            "input": ["text", "image"]
+          },
+          "compat": {
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": true,
+            "thinkingFormat": "reasoning_effort"
+          },
+          "options": {
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "reasoning_effort": "xhigh"
+          }
         }
       }
     }
   }
 }
-

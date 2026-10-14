@@ -1,17 +1,28 @@
 services:
   download-weights:
     image: alpine
-    container_name: download-weights 
+    container_name: download-weights
     volumes:
       - ./models:/models:rw
-    command: 
-      - /bin/sh 
-      - -c 
+    # Качаем во временный .part и переименовываем только после успешной загрузки,
+    # чтобы оборванная закачка не считалась готовым файлом. wget -c докачивает.
+    command:
+      - /bin/sh
+      - -c
       - |
-        [ -e "/models/Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf" ] || (mkdir -p /models && wget https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf -P /models)
-        [ -e "/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf" ] || (mkdir -p /models && wget https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf -P /models)
-        [ -e "/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00002-of-00003.gguf" ] || (mkdir -p /models && wget https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00002-of-00003.gguf -P /models)
-        [ -e "/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00003-of-00003.gguf" ] || (mkdir -p /models && wget https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00003-of-00003.gguf -P /models)
+        set -e
+        mkdir -p /models
+        BASE=https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/resolve/main
+        for f in \
+          Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf \
+          Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf \
+          Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00002-of-00003.gguf \
+          Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00003-of-00003.gguf \
+          mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf ; do
+          if [ ! -e "/models/$$f" ]; then
+            wget -c "$$BASE/$$f" -O "/models/$$f.part" && mv "/models/$$f.part" "/models/$$f"
+          fi
+        done
 
   llm-server:
     build:
@@ -22,74 +33,103 @@ services:
       - "8192:8080"
     volumes:
       - ./models:/models
-    # ЯВНО ПЕРЕДАЕМ ФЛАГ ОТКЛЮЧЕНИЯ MMAP ЧЕРЕЗ COMMAND
+    # Все параметры передаются флагами CLI: неизвестный флаг llama-server
+    # отвергнет при старте, а неизвестную переменную окружения молча проигнорирует.
     command: [
-      "--load-mode", "none", 
-      "--ctx-size", "262144", 
-      "--batch-size", "2048", 
-      "--ubatch-size", "2048",
-      "--reasoning-effort", "low",
-      "--reasoning-budget", "1024"
+      # --- Модель ---
+      "--model",        "/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf",
+      "--mmproj",       "/models/mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf",
+      "--alias",        "local",
+      "--host",         "0.0.0.0",
+      "--port",         "8080",
+
+      # --- Загрузка в RAM без mmap (веса читаются один раз, дальше из RAM) ---
+      "--load-mode",    "none",
+
+      # --- Раскладка по GPU ---
+      # layer-split вместо row: у вас две разные карты (Ampere + Ada) по PCIe без NVLink,
+      # row-split там синхронизирует каждый матмул и обычно медленнее.
+      "--split-mode",   "layer",
+      "--main-gpu",     "0",
+      # Авто-подбор раскладки: --fit сам решает, сколько слоёв и экспертов MoE
+      # положить на каждую GPU, остальное уходит в RAM.
+      # ВАЖНО: fit меняет только параметры, не заданные вручную, поэтому
+      # --n-gpu-layers / --tensor-split / --n-cpu-moe здесь НЕ указываем.
+      # Запас 1024 МиБ на карту под compute-буферы.
+      "--fit",          "on",
+      # Запас по картам (МиБ): fit не учитывает MTP-драфт, который грузится после
+      # основной модели. На CUDA0 оставляем ~5 ГБ: 2.6 ГБ весов драфта + его KV
+      # и буферы + 1 ГБ запаса. На CUDA1 хватает 1 ГБ.
+      "--fit-target",   "2048,1024",
+      # Vision-энкодер (mmproj) держим на CPU: картинки в кодинге редки,
+      # а это 1-2 ГБ VRAM, которые лучше отдать слоям модели.
+      "--no-mmproj-offload",
+
+      # --- Контекст и KV-кэш ---
+      "--ctx-size",     "262144",
+      "--parallel",     "4",          # иначе слоты делят контекст (4 слота = по 64k, 2 по 128)
+      "--kv-unified",   "--kv-unified-per-slot", "131072",
+      "--flash-attn",   "on",
+      "--cache-type-k", "q8_0",
+      "--cache-type-v", "q8_0",
+      "--no-context-shift",           # для гибридной (рекуррентной) модели и агентного кода сдвиг вреден
+      "--ctx-checkpoints", "32",      # больше чекпоинтов -> лучше переиспользуется префикс у гибридной модели
+      "--cache-ram",    "16384",      # кэш промптов в RAM (МиБ): OpenCode часто шлёт тот же длинный префикс
+
+      # --- Батчи: большой ubatch ускоряет prefill, когда эксперты на CPU ---
+      "--batch-size",   "2048",
+      "--ubatch-size",  "2048",   # compute-буфер растёт с ubatch; 2048 при 262k контексте — несколько ГБ VRAM
+
+      # --- CPU: i7-14700, P-ядра с HT = логические 0-15 ---
+      "--threads",       "8",
+      "--threads-batch", "16",
+
+      # --- Спекулятивное декодирование (MTP + n-gram для повторяющегося кода) ---
+      "--model-draft",       "/models/Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf",
+      "--device-draft",      "CUDA0",   # драфт целиком на Ada: под него зарезервирован запас в --fit-target
+      "--spec-type",         "draft-mtp,ngram-mod",
+      # MTP: 3 токена — рекомендуемое значение для Qwen3.x MTP
+      "--spec-draft-n-max",  "3",
+      "--spec-draft-n-min",  "1",
+      # ngram-mod: для MoE нужны длинные драфты; маленький n-match не рекомендуется
+      "--spec-ngram-mod-n-match", "24",
+      "--spec-ngram-mod-n-min",   "48",
+      "--spec-ngram-mod-n-max",   "64",
+
+      # --- Рассуждения: максимум для сложных задач ---
+      # high + бюджет без лимита: на сложных багах/архитектуре модель думает
+      # 5-20k токенов, обрезка на 1024 ломает решение посреди анализа.
+      # Если на рутине думает слишком долго — поставьте бюджет 16384.
+      "--reasoning-effort",  "xhigh",
+      "--reasoning-budget",  "-1",
+      # Сохранять прошлые размышления между шагами агента (interleaved thinking):
+      # в многошаговых задачах OpenCode модель не теряет свой план.
+      "--reasoning-preserve",
+
+      # --- Сэмплинг под код (thinking-режим) ---
+      # repeat-penalty убран: для кода он ломает повторяющиеся токены (скобки, отступы, имена).
+      "--temp",             "0.6",
+      "--top-p",            "0.95",
+      "--top-k",            "20",
+      "--min-p",            "0.0",
+      "--presence-penalty", "0.0",
+      "--repeat-penalty",   "1.0",
+      # Длинные ответы агента (большие правки файлов) не обрезаются
+      "--n-predict",        "-1"
     ]
     environment:
-      - LLAMA_ARG_MODEL=/models/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf
-      - LLAMA_ARG_MODEL_DRAFT=/models/Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf
-      - LLAMA_ARG_MMPROJ=/models/mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf
-
-      # ОТКЛЮЧАЕМ MMAP ДЛЯ МАКСИМАЛЬНОЙ СКОРОСТИ ИЗ RAM
-      - LLAMA_LOAD_MODE=none
-      
-      # Сетевые настройки сервера
-      - LLAMA_HOST=0.0.0.0
-      - LLAMA_PORT=8080
-      - LLAMA_ALIAS=local
-
-      # Распределение памяти между GPU (16GB Ada + 12GB)
-      - LLAMA_SPLIT_MODE=row
-      - LLAMA_TENSOR_SPLIT=16,12
-      - LLAMA_FIT=on
-      - LLAMA_FIT_TARGET=256
-      - LLAMA_FLASH_ATTN=on
-      - LLAMA_CACHE_TYPE_K=q8_0
-      - LLAMA_CACHE_TYPE_V=q8_0
-
-      # Настройки контекста для OpenCode
-      - LLAMA_CTX_SIZE=262144
-      - LLAMA_BATCH_SIZE=2048
-      - LLAMA_UBATCH_SIZE=2048
-      - LLAMA_GRP_ATTN_N=4
-      - LLAMA_GRP_ATTN_W=1024
-      # ШТРАФ ЗА ПОВТОРЕНИЯ: Слегка бьем модель по рукам за зацикливание (дефолт 1.0 - выключен)
-      - LLAMA_REPEAT_PENALTY=1.05
-      # ОКНО ПОВТОРЕНИЙ: Смотрим на последние 256 токенов (около 2-3 функций кода)
-      - LLAMA_REPEAT_LAST_N=256
-      - LLAMA_CHAT_TEMPLATE_KWARGS={"reasoning_effort":"low"}
-
-      # Оптимизация под CPU i7-14700 (8 Производительных ядер)
-      - LLAMA_THREADS=8
-      - LLAMA_THREADS_BATCH=16
-
-      # Спекулятивное декодирование (MTP + Ngram)
-      - LLAMA_SPEC_TYPE=draft-mtp,ngram-mod
-      - LLAMA_SPEC_DRAFT_NGL=99
-      - LLAMA_SPEC_DRAFT_N_MAX=3
-      - LLAMA_SPEC_NGRAM_MATCH=24
-
-      # Настройки сэмплинга для Thinking-режима Qwen
-      - LLAMA_TEMP=0.4
-      - LLAMA_TOP_P=0.95
-      - LLAMA_TOP_K=40
-      - LLAMA_MIN_P=0.05
-      # Ограничиваем максимальное количество токенов на размышления
-      - LLAMA_REASONING_PRESERVE=true      
-      - LLAMA_PRESENCE_PENALTY=0.0
-      - LLAMA_CACHE_PROMPT=true
-      - LLAMA_CTX_SHIFT=true
-      # ЖЕСТКАЯ ЗАЩИТА: принудительная остановка на тегах, чтобы код не зацикливался
-      - LLAMA_STOP=</think>,<|im_end|>,<|endoftext|>
-    # Ограничиваем использование ядер CPU для i7-14700 (16 потоков)
+      # Стабильная нумерация GPU: 0 = карта в первом слоте PCIe.
+      # Проверьте nvidia-smi: под индексом 0 должна быть A2000 Ada 16GB, иначе поменяйте tensor-split на 12,16.
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
     cpuset: "0-15"
     restart: unless-stopped
+    healthcheck:
+      # Нужен curl в образе Dockerfile.PureLLAMA
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 600s   # загрузка ~50 ГБ без mmap занимает время
     deploy:
       resources:
         reservations:
@@ -115,7 +155,7 @@ services:
       - "80:4096"
     volumes:
       - ./opencode.json:/root/.config/opencode/opencode.json:ro
-      - opencode_workspace:/root/workspace 
+      - opencode_workspace:/root/workspace
       - ./AGENTS.md:/root/workspace/AGENTS.md:ro
     restart: unless-stopped
     depends_on:
@@ -130,24 +170,23 @@ services:
     container_name: opencode-samba
     environment:
       - TZ=Europe/Moscow
-      # -p включает глобальный гостевой доступ (guest account)
       - NMBD=yes
       - OPTIONS=-p -r
       # Формат шары: "имя;путь;публичная;только_чтение;гость"
-      # Ставим yes на "публичная" и "гость"
       - SHARE=public;/share;yes;no;yes
       - PERMISSIONS=1
     volumes:
-      - opencode_workspace:/share:z # Подключаем тот же том, что и у приложения
+      - opencode_workspace:/share:z
+      - ./AGENTS.md:/share/AGENTS.md:ro
     ports:
       - "139:139"
       - "445:445"
     restart: unless-stopped
     depends_on:
       opencode-server:
-        condition: service_healthy
+        # у opencode-server нет healthcheck, service_healthy не дал бы запуститься
+        condition: service_started
 
 volumes:
-  opencode_workspace:       
+  opencode_workspace:
     name: opencode-workspace
-
